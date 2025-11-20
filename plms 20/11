@@ -1,0 +1,220 @@
+#include <Adafruit_TCS34725.h>
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+
+// --- KHAI BÁO CHÂN GPIO ---
+const int PIN_BUTTON_ON    = 18;
+const int PIN_BUTTON_OFF   = 19;
+const int PIN_BUTTON_RESET = 23;
+
+const int PIN_IR_DUNG      = 5;
+const int PIN_IR_MAU_DO    = 17;
+const int PIN_IR_MAU_VANG  = 16;
+
+const int PIN_BANG_TAI     = 12;
+const int XL_MAU_DO        = 13;
+const int XL_MAU_VANG      = 14;
+
+LiquidCrystal_I2C lcd(0x27, 16, 2); 
+Adafruit_TCS34725 tcs = Adafruit_TCS34725(TCS34725_INTEGRATIONTIME_154MS, TCS34725_GAIN_4X);
+
+bool isRunning = false;
+int redCount = 0;
+int yellowCount = 0;
+int greenCount = 0;
+
+bool pushRedPending    = false;
+bool pushYellowPending = false;
+
+// ================== HÀM ĐỌC MÀU + IN RA SERIAL ==================
+String readAndIdentifyColor() 
+{
+  tcs.enable();
+  delay(200); 
+
+  uint16_t r, g, b, c;
+  tcs.getRawData(&r, &g, &b, &c);
+
+  // ================== IN RA SERIAL MONITOR ==================
+  Serial.print("RAW RGB: ");
+  Serial.print(r); Serial.print("\t");
+  Serial.print(g); Serial.print("\t");
+  Serial.print(b); Serial.print("\t");
+  Serial.print(c); Serial.println();
+
+  // --- PHÂN LOẠI MÀU ---
+  String colorName = "OTHER/MIXED";
+  
+  if (r > 18 && r > g && r > b) {
+    colorName = "RED";
+  }
+  else if (g > 18 && g > r && g > b) {
+    colorName = "GREEN";
+  }
+  else if (b > 18 && b > r && b > g) {
+    colorName = "BLUE";
+  }
+  // Thêm điều kiện nhận diện VÀNG (rất quan trọng!)
+  else if (r > 50 && g > 50 && r > b * 1.2 && g > b * 1.2) {
+    colorName = "YELLOW";   // Vàng thường có R và G cao, B thấp
+  }
+
+  // --- HIỂN THỊ LÊN LCD ---
+  lcd.clear();
+  lcd.setCursor(0, 0); 
+  lcd.print("R/G/B: ");
+  lcd.print(r); lcd.print("/");
+  lcd.print(g); lcd.print("/");
+  lcd.print(b); 
+  
+  lcd.setCursor(0, 1); 
+  lcd.print("COL: ");
+  lcd.print(colorName);
+
+  tcs.disable(); 
+  return colorName;
+}
+
+void setup() 
+{
+  Serial.begin(115200);           
+  while(!Serial);                
+
+  // Cấu hình chân
+  pinMode(PIN_BUTTON_ON, INPUT_PULLUP);
+  pinMode(PIN_BUTTON_OFF, INPUT_PULLUP);
+  pinMode(PIN_BUTTON_RESET, INPUT_PULLUP);
+  pinMode(PIN_IR_DUNG, INPUT_PULLUP);
+  pinMode(PIN_IR_MAU_DO, INPUT_PULLUP);
+  pinMode(PIN_IR_MAU_VANG, INPUT_PULLUP);
+
+  pinMode(PIN_BANG_TAI, OUTPUT);
+  pinMode(XL_MAU_DO, OUTPUT);
+  pinMode(XL_MAU_VANG, OUTPUT);
+
+  digitalWrite(PIN_BANG_TAI, LOW);
+  digitalWrite(XL_MAU_DO, LOW);
+  digitalWrite(XL_MAU_VANG, LOW);
+
+  lcd.init();
+  lcd.backlight();
+  lcd.setCursor(0, 0);
+  lcd.print("COLOR SORTER");
+  lcd.setCursor(0, 1);
+  lcd.print("Ready...");
+
+  if (tcs.begin()) {
+    Serial.println("TCS34725 Found!");
+  } else {
+    lcd.clear();
+    lcd.print("Sensor ERROR!");
+    Serial.println("TCS34725 not found!");
+    while(1);
+  }
+  delay(2000);
+}
+
+void loop()
+{
+  // ===== NÚT OFF =====
+  if (digitalRead(PIN_BUTTON_OFF) == LOW) {
+    delay(20);
+    while(digitalRead(PIN_BUTTON_OFF) == LOW);
+    isRunning = false;
+    digitalWrite(PIN_BANG_TAI, LOW);
+    digitalWrite(XL_MAU_DO, LOW);
+    digitalWrite(XL_MAU_VANG, LOW);
+    pushRedPending = pushYellowPending = false;
+    lcd.clear(); lcd.print("SYSTEM OFF");
+    Serial.println("=== SYSTEM OFF ===");
+    return;
+  }
+
+  // ===== NÚT ON =====
+  if (digitalRead(PIN_BUTTON_ON) == LOW) {
+    delay(20);
+    while(digitalRead(PIN_BUTTON_ON) == LOW);
+    isRunning = true;
+    digitalWrite(PIN_BANG_TAI, HIGH);
+    pushRedPending = pushYellowPending = false;
+    lcd.clear();
+    lcd.print("SYSTEM ON");
+    lcd.setCursor(0,1); lcd.print("Running...");
+    Serial.println("=== SYSTEM ON - Conveyor START ===");
+  }
+
+  if (!isRunning) return;
+
+  digitalWrite(PIN_BANG_TAI, HIGH);
+
+  // ===== QUÉT MÀU =====
+  if (digitalRead(PIN_IR_DUNG) == LOW) {
+    digitalWrite(PIN_BANG_TAI, LOW);
+    delay(300);
+
+    pushRedPending = pushYellowPending = false;
+
+    unsigned long startTime = millis();
+    String detectedColor = "OTHER/MIXED";
+
+    Serial.println(">>> OBJECT DETECTED - SCANNING COLOR...");
+
+    while (millis() - startTime < 3000) {
+      detectedColor = readAndIdentifyColor();  // In R/G/B ra Serial 
+
+      if (detectedColor == "RED") {
+        redCount++;
+        pushRedPending = true;
+        Serial.println(">>> DETECTED: RED");
+        break;
+      }
+      else if (detectedColor == "YELLOW") {
+        yellowCount++;
+        pushYellowPending = true;
+        Serial.println(">>> DETECTED: YELLOW");
+        break;
+      }
+      else if (detectedColor == "GREEN") {
+        greenCount++;
+        Serial.println(">>> DETECTED: GREEN");
+        break;
+      }
+      delay(150);
+    }
+
+    // Hiển thị kết quả cuối cùng
+    lcd.clear();
+    lcd.setCursor(0,0); lcd.print("COLOR: "); lcd.print(detectedColor);
+    lcd.setCursor(0,1); 
+    lcd.print("R"); lcd.print(redCount);
+    lcd.print(" Y"); lcd.print(yellowCount);
+    lcd.print(" G"); lcd.print(greenCount);
+
+    delay(1000);
+    digitalWrite(PIN_BANG_TAI, HIGH);
+  }
+
+  // ===== ĐẨY ĐỎ =====
+  if (pushRedPending && digitalRead(PIN_IR_MAU_DO) == LOW) {
+    Serial.println(">>> PUSHING RED");
+    digitalWrite(PIN_BANG_TAI, LOW);
+    digitalWrite(XL_MAU_DO, HIGH);
+    delay(600);
+    digitalWrite(XL_MAU_DO, LOW);
+    delay(400);
+    digitalWrite(PIN_BANG_TAI, HIGH);
+    pushRedPending = false;
+  }
+
+  // ===== ĐẨY VÀNG =====
+  if (pushYellowPending && digitalRead(PIN_IR_MAU_VANG) == LOW) {
+    Serial.println(">>> PUSHING YELLOW");
+    digitalWrite(PIN_BANG_TAI, LOW);
+    digitalWrite(XL_MAU_VANG, HIGH);
+    delay(600);
+    digitalWrite(XL_MAU_VANG, LOW);
+    delay(400);
+    digitalWrite(PIN_BANG_TAI, HIGH);
+    pushYellowPending = false;
+  }
+}
