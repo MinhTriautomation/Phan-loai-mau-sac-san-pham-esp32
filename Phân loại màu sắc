@@ -1,0 +1,150 @@
+#include <Adafruit_TCS34725.h>
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h> 
+
+// Địa chỉ I2C mặc định cho LCD 16x2 (Kiểm tra lại nếu không hoạt động: 0x27 hoặc 0x3F)
+LiquidCrystal_I2C lcd(0x27, 16, 2); 
+
+// Khai báo cảm biến
+Adafruit_TCS34725 tcs = Adafruit_TCS34725(TCS34725_INTEGRATIONTIME_154MS, TCS34725_GAIN_4X);
+
+// Biến trạng thái để kiểm soát việc đọc màu liên tục
+bool isReading = false; 
+
+// ------------------- HÀM ĐỌC VÀ XỬ LÝ MÀU -------------------
+void readAndIdentifyColor() 
+{
+  tcs.enable();
+  delay(200); 
+
+  uint16_t r, g, b, c, colorTemp, lux;
+  tcs.getRawData(&r, &g, &b, &c);
+  
+  colorTemp = tcs.calculateColorTemperature(r, g, b); 
+  lux = tcs.calculateLux(r, g, b); 
+  
+  // --- PHÂN LOẠI MÀU SẮC VÀ CHUỖI HIỂN THỊ TRÊN LCD ---
+  String colorName = "OTHER/MIXED";
+  
+  if (r > 18 && r > g && r > b) 
+  {
+    colorName = "RED"; // ĐỎ -> RED
+  }
+  else if (g > 18 && g > r && g > b) 
+  {
+    colorName = "GREEN"; // XANH LỤC -> GREEN
+  }
+  else if (b > 18 && b > r && b > g) 
+  {
+    colorName = "BLUE"; // XANH BIỂN -> BLUE
+  }
+  else if (r <= 18 && g <= 18 && b <= 18) 
+  {
+    colorName = "BLACK/DARK"; // TỐI/ĐEN -> BLACK/DARK
+  }
+  
+  // --- HIỂN THỊ DỮ LIỆU LÊN SERIAL ---
+  Serial.println("\n--- KẾT QUẢ ĐO ĐƯỢC ---");
+  Serial.print("R: "); Serial.print(r); 
+  Serial.print(" G: "); Serial.print(g); 
+  Serial.print(" B: "); Serial.println(b);
+  Serial.print("Ket qua: "); Serial.println(colorName);
+  
+  // --- HIỂN THỊ DỮ LIỆU LÊN LCD ---
+  lcd.clear();
+  lcd.setCursor(0, 0); // Dòng 1: Giá trị R/G/B
+  lcd.print("R/G/B: ");
+  lcd.print(r); lcd.print("/");
+  lcd.print(g); lcd.print("/");
+  lcd.print(b); 
+  
+  lcd.setCursor(0, 1); // Dòng 2: Kết quả phân loại màu
+  lcd.print("COLOR: ");
+  lcd.print(colorName);
+
+  // Tắt cảm biến
+  tcs.disable(); 
+}
+
+// ------------------- HÀM ĐIỀU KHIỂN TRẠNG THÁI -------------------
+void onDocMau() 
+{
+  isReading = true;
+  Serial.println("\n✨ [Lệnh]: Kích hoạt Đọc Màu Liên Tục.");
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("SCAN MODE: ON"); // Cập nhật hiển thị ON
+  lcd.setCursor(0, 1);
+  lcd.print("Processing...");
+}
+
+void offDocMau() 
+{
+  isReading = false;
+  Serial.println("\n🚫 [Lệnh]: Tắt Đọc Màu Liên Tục.");
+  tcs.disable(); // Đảm bảo cảm biến tắt
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("SCAN MODE: OFF"); // Cập nhật hiển thị OFF
+  lcd.setCursor(0, 1);
+  lcd.print("Ready");
+}
+
+// ------------------- SETUP VÀ LOOP -------------------
+
+void setup() 
+{
+  Serial.begin(9600);
+  
+  // 1. Khởi tạo LCD
+  lcd.init();
+  lcd.backlight();
+  lcd.setCursor(0, 0);
+  lcd.print("TCS34725 Color");
+  
+  // 2. Khởi tạo Cảm biến
+  if (tcs.begin()) 
+  {
+    Serial.println("✅ Cảm biến TCS34725 hoạt động.");
+    lcd.setCursor(0, 1);
+    lcd.print("Sensor OK!");
+  } 
+  else 
+  {
+    Serial.println("❌ Lỗi: Cảm biến không kết nối.");
+    lcd.setCursor(0, 1);
+    lcd.print("SENSOR ERROR!!!");
+    while (1);
+  }
+  
+  // Tắt cảm biến và hiển thị trạng thái OFF ban đầu
+  delay(1000); // Đợi 1s để người dùng thấy thông báo khởi động
+  offDocMau();
+}
+ 
+void loop() 
+{
+  // 1. Logic Điều khiển bằng Serial
+  if (Serial.available()) 
+  {
+    String command = Serial.readStringUntil('\n');
+    command.trim(); 
+    command.toUpperCase();
+    
+    if (command == "ON") 
+    {
+      onDocMau();
+    } 
+    else if (command == "OFF") 
+    {
+      offDocMau();
+    }
+  }
+
+  // 2. Logic Đọc Màu (Chỉ chạy khi isReading = true)
+  if (isReading) 
+  {
+    readAndIdentifyColor();
+    delay(500); 
+  }
+}
