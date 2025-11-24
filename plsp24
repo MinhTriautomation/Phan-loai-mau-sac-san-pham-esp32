@@ -1,0 +1,254 @@
+#include <Adafruit_TCS34725.h>
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+
+// --- ĐỊNH NGHĨA CHÂN (Theo phong cách #define) ---
+#define CHAN_NUT_BAT 12        // Nút ON
+#define CHAN_NUT_TAT 13        // Nút OFF
+#define CHAN_NUT_RESET 14      // Nút RESET
+
+#define CHAN_CAM_BIEN_DUNG 32      // Cảm biến vị trí dừng để soi màu
+#define CHAN_CAM_BIEN_DAY_DO 35    // Cảm biến vị trí đẩy Đỏ
+#define CHAN_CAM_BIEN_DAY_XANH 34  // Cảm biến vị trí đẩy Xanh
+
+#define CHAN_BANG_TAI 18
+#define CHAN_XI_LANH_DO 19
+#define CHAN_XI_LANH_XANH 23
+
+// --- CẤU HÌNH ---
+#define DIA_CHI_LCD 0x27
+LiquidCrystal_I2C lcd(DIA_CHI_LCD, 16, 2);
+Adafruit_TCS34725 tcs = Adafruit_TCS34725(TCS34725_INTEGRATIONTIME_154MS, TCS34725_GAIN_4X);
+
+// --- BIẾN TRẠNG THÁI ---
+bool heThongDangBat = false;
+bool choDayDo = false;   // Cờ báo đang chờ đẩy màu Đỏ
+bool choDayXanh = false; // Cờ báo đang chờ đẩy màu Xanh (hoặc Vàng)
+
+int soLuongDo = 0;
+int soLuongXanhLa = 0;
+int soLuongXanhDuong = 0;
+int soLuongKhac = 0;
+
+// Cập nhật hiển thị LCD (Phong cách code cũ)
+void capNhatLCD(String dong1, String dong2) {
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print(dong1);
+  lcd.setCursor(0, 1);
+  lcd.print(dong2);
+}
+
+// Hàm điều khiển băng tải
+void chayBangTai() {
+  digitalWrite(CHAN_BANG_TAI, HIGH);
+}
+
+void dungBangTai() {
+  digitalWrite(CHAN_BANG_TAI, LOW);
+}
+
+// Hàm đẩy xi lanh Đỏ
+void dayXiLanhDo() {
+  Serial.println("Dang day san pham DO...");
+  dungBangTai(); // Dừng băng tải để đẩy cho chuẩn
+  digitalWrite(CHAN_XI_LANH_DO, HIGH);
+  delay(600);
+  digitalWrite(CHAN_XI_LANH_DO, LOW);
+  delay(400);
+  chayBangTai(); // Chạy lại
+}
+
+// Hàm đẩy xi lanh Xanh
+void dayXiLanhXanh() {
+  Serial.println("Dang day san pham XANH...");
+  dungBangTai();
+  digitalWrite(CHAN_XI_LANH_XANH, HIGH);
+  delay(600);
+  digitalWrite(CHAN_XI_LANH_XANH, LOW);
+  delay(400);
+  chayBangTai();
+}
+
+// Hàm đọc và phân loại màu
+String phanLoaiMau() {
+  tcs.enable();
+  delay(200); // Chờ cảm biến ổn định
+
+  uint16_t r, g, b, c;
+  tcs.getRawData(&r, &g, &b, &c);
+
+  // In ra Serial để debug
+  Serial.print("R: "); Serial.print(r);
+  Serial.print(" G: "); Serial.print(g);
+  Serial.print(" B: "); Serial.print(b);
+  Serial.println();
+
+  String ketQua = "KHAC";
+
+  // Logic phân loại (Giữ nguyên logic cũ)
+  if (r > 30 && r > g * 1.5 && r > b * 1.5) {
+    ketQua = "DO";
+  }
+  else if (b > 30 && b > r * 1.5 && b > g * 1.5) {
+    ketQua = "XANH DUONG";
+  }
+  // Gộp Xanh lá và Vàng
+  else if ((g > 30 && g > r * 1.5 && g > b * 1.5) || 
+           (r > 50 && g > 50 && r > b * 1.2 && g > b * 1.2)) { 
+    ketQua = "XANH LA"; 
+  }
+
+  tcs.disable();
+  return ketQua;
+}
+
+// Đặt lại hệ thống
+void resetHeThong() {
+  soLuongDo = 0;
+  soLuongXanhLa = 0;
+  soLuongXanhDuong = 0;
+  soLuongKhac = 0;
+  choDayDo = false;
+  choDayXanh = false;
+  
+  capNhatLCD("DA RESET", "R0 G0 B0");
+  Serial.println("He thong da RESET");
+  delay(1000);
+}
+
+void setup() {
+  Serial.begin(115200);
+  
+  // Cấu hình chân
+  pinMode(CHAN_NUT_BAT, INPUT_PULLUP);
+  pinMode(CHAN_NUT_TAT, INPUT_PULLUP);
+  pinMode(CHAN_NUT_RESET, INPUT_PULLUP);
+  
+  pinMode(CHAN_CAM_BIEN_DUNG, INPUT_PULLUP);
+  pinMode(CHAN_CAM_BIEN_DAY_DO, INPUT_PULLUP);
+  pinMode(CHAN_CAM_BIEN_DAY_XANH, INPUT_PULLUP);
+
+  pinMode(CHAN_BANG_TAI, OUTPUT);
+  pinMode(CHAN_XI_LANH_DO, OUTPUT);
+  pinMode(CHAN_XI_LANH_XANH, OUTPUT);
+
+  // Trạng thái ban đầu
+  digitalWrite(CHAN_BANG_TAI, LOW);
+  digitalWrite(CHAN_XI_LANH_DO, LOW);
+  digitalWrite(CHAN_XI_LANH_XANH, LOW);
+
+  lcd.init();
+  lcd.backlight();
+  capNhatLCD("MAY PHAN LOAI", "San sang...");
+
+  if (tcs.begin()) {
+    Serial.println("Da tim thay TCS34725");
+  } else {
+    capNhatLCD("LOI CAM BIEN", "Kiem tra day!");
+    Serial.println("Khong tim thay TCS34725");
+    while (1); // Dừng hệ thống nếu lỗi
+  }
+}
+
+void loop() {
+  // 1. Xử lý nút TẮT
+  if (digitalRead(CHAN_NUT_TAT) == LOW && heThongDangBat) {
+    delay(20); // Chống dội
+    if(digitalRead(CHAN_NUT_TAT) == LOW){
+        heThongDangBat = false;
+        dungBangTai();
+        choDayDo = false;
+        choDayXanh = false;
+        digitalWrite(CHAN_XI_LANH_DO, LOW);
+        digitalWrite(CHAN_XI_LANH_XANH, LOW);
+        capNhatLCD("HE THONG TAT", "Dung hoat dong");
+        Serial.println("--- HE THONG TAT ---");
+        delay(500);
+    }
+  }
+
+  // 2. Xử lý nút RESET
+  if (digitalRead(CHAN_NUT_RESET) == LOW) {
+    delay(20);
+    if(digitalRead(CHAN_NUT_RESET) == LOW){
+        resetHeThong();
+    }
+  }
+
+  // 3. Xử lý nút BẬT
+  if (digitalRead(CHAN_NUT_BAT) == LOW && !heThongDangBat) {
+    delay(20);
+    if(digitalRead(CHAN_NUT_BAT) == LOW){
+        heThongDangBat = true;
+        choDayDo = false;
+        choDayXanh = false;
+        capNhatLCD("HE THONG BAT", "Dang chay...");
+        Serial.println("--- HE THONG BAT ---");
+        chayBangTai();
+        delay(500);
+    }
+  }
+
+  // --- LOGIC CHÍNH KHI HỆ THỐNG ĐANG BẬT ---
+  if (heThongDangBat) {
+    
+    // A. Kiểm tra cảm biến dừng để đọc màu
+    if (digitalRead(CHAN_CAM_BIEN_DUNG) == HIGH) { // Cảm biến phát hiện vật (giả sử HIGH là có vật, tùy hardware)
+      // Lưu ý: Code cũ bạn dùng INPUT_PULLUP, nếu cảm biến trả LOW khi có vật thì sửa thành == LOW
+      // Ở đây tôi giữ logic code TCS (LOW kích hoạt) nhưng code mẫu của bạn lại dùng HIGH, hãy kiểm tra lại loại cảm biến.
+      // Dưới đây tôi viết theo logic: LOW là CÓ VẬT (Input Pullup).
+    } 
+    
+    // Logic phát hiện vật để soi màu (giả sử Active LOW)
+    if (digitalRead(CHAN_CAM_BIEN_DUNG) == LOW) { // Có vật chắn cảm biến soi
+        dungBangTai();
+        delay(300); // Chờ vật dừng hẳn
+        
+        Serial.println("Phat hien vat -> Dang soi mau...");
+        String mauSac = phanLoaiMau();
+        
+        // Cập nhật trạng thái và biến đếm
+        if (mauSac == "DO") {
+            soLuongDo++;
+            choDayDo = true;
+            choDayXanh = false;
+            capNhatLCD("Mau: DO", "D:" + String(soLuongDo));
+        } 
+        else if (mauSac == "XANH LA") {
+            soLuongXanhLa++;
+            choDayXanh = true; // Kích hoạt cờ chờ đẩy Xanh
+            choDayDo = false;
+            capNhatLCD("Mau: XANH LA", "X:" + String(soLuongXanhLa));
+        }
+        else if (mauSac == "XANH DUONG") {
+            soLuongXanhDuong++;
+            // Xanh dương không đẩy, cho đi qua luôn
+            choDayDo = false;
+            choDayXanh = false;
+            capNhatLCD("Mau: XANH DUONG", "XD:" + String(soLuongXanhDuong));
+        }
+        else {
+            soLuongKhac++;
+            choDayDo = false;
+            choDayXanh = false;
+            capNhatLCD("Mau: KHAC", "K:" + String(soLuongKhac));
+        }
+
+        delay(1000); // Hiển thị LCD 1s
+        chayBangTai(); // Cho chạy tiếp để đến vị trí đẩy
+    }
+
+    // B. Xử lý đẩy ĐỎ (Nếu có cờ chờ và cảm biến phát hiện)
+    if (choDayDo && digitalRead(CHAN_CAM_BIEN_DAY_DO) == LOW) {
+        dayXiLanhDo();
+        choDayDo = false; // Xóa cờ sau khi đẩy xong
+    }
+
+    // C. Xử lý đẩy XANH (Nếu có cờ chờ và cảm biến phát hiện)
+    if (choDayXanh && digitalRead(CHAN_CAM_BIEN_DAY_XANH) == LOW) {
+        dayXiLanhXanh();
+        choDayXanh = false; // Xóa cờ sau khi đẩy xong
+    }
+  }
+}
